@@ -1,0 +1,7 @@
+ 
+    public class JUAN {
+        public static void main(String[] args) {
+            Cliente JUAN = new Cliente("C:\\Users\\WALTER\\IdeaProjects\\TPREDESEBERLE\\src\\Configuracion",
+                    "C:\\Users\\WALTER\\IdeaProjects\\TPREDESEBERLE\\src\\Conexion", "JUAN");
+        }
+    }
