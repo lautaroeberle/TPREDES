@@ -1,0 +1,336 @@
+import java.io.*;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.UnknownHostException;
+import java.util.*;
+
+public class Cliente {
+    private String nombre;
+    private String ip;
+    private int puerto;
+    private Cliente clienteAnterior;
+    private Cliente clienteSiguiente;
+
+    private static PrintWriter salidaInter;
+    private static Map<String, Cliente> clientes = new HashMap<>();
+
+    public Cliente(String archivoConfig, String archivoConex, String nombre) {
+        this.nombre = nombre;
+        cargarConfiguracion(archivoConfig);
+        establecerClientesAnteriorYPosterior(archivoConex);
+        iniciarPrograma();
+    }
+
+    public Cliente(String nombre, String ip, int puerto,Cliente clienteAnterior,Cliente clienteSiguiente) {
+        this.nombre = nombre;
+        this.ip = ip;
+        this.puerto = puerto;
+        this.clienteAnterior = clienteAnterior;
+        this.clienteSiguiente = clienteSiguiente;
+    }
+
+    private void agregarCliente(String nombre, Cliente cliente) {
+        clientes.put(nombre, cliente);
+    }
+
+    public Cliente pasarAtributos(String[] atributos) {
+        if (atributos.length == 3) {
+            int puerto = Integer.parseInt(atributos[2]);
+            return new Cliente(atributos[0], atributos[1], puerto, null, null);
+        }
+        return null;
+    }
+
+    public void establecerClientesAnteriorYPosterior(String connectionFile) {
+        try (BufferedReader br = new BufferedReader(new FileReader(connectionFile))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] nombresClientes = line.split("<->");
+                for (int i = 0; i < nombresClientes.length; i++) {
+                    int indiceAnterior = -1;
+                    if (i > 0) {
+                        indiceAnterior = i - 1;
+                    }
+
+                    int indiceSiguiente = -1;
+                    if (i < nombresClientes.length - 1) {
+                        indiceSiguiente = i + 1;
+                    }
+                    Cliente clienteActual = clientes.get(nombresClientes[i]);
+                    if (indiceAnterior != -1) {
+                        Cliente clienteAnterior = clientes.get(nombresClientes[indiceAnterior]);
+                        clienteActual.setClienteAnterior(clienteAnterior);
+                    } else {
+                        clienteActual.setClienteAnterior(null);
+                    }
+
+                    if (indiceSiguiente != -1) {
+                        Cliente clienteSiguiente = clientes.get(nombresClientes[indiceSiguiente]);
+                        clienteActual.setClienteSiguiente(clienteSiguiente);
+                    } else {
+                        clienteActual.setClienteSiguiente(null);
+                    }
+
+                    clientes.put(clienteActual.getNombre(), clienteActual);
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void cargarConfiguracion(String configFile) {
+        try (BufferedReader br = new BufferedReader(new FileReader(configFile))) {
+            String linea;
+            while ((linea = br.readLine()) != null) {
+                String[] partes = linea.split(":");
+                if (partes.length == 3) {
+                    Cliente esteCliente = pasarAtributos(partes);
+                    agregarCliente(esteCliente.getNombre(), esteCliente);
+                } else {
+                    System.out.println("Error en el formato de la línea: " + linea );
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    public void iniciarPrograma() {
+        try {
+
+            ServerSocket serverSocket = new ServerSocket(clientes.get(this.getNombre()).getPuerto());
+
+            System.out.println("Escuchando en " + clientes.get(this.getNombre()).getIp() + ":" + clientes.get(this.getNombre()).getPuerto());
+
+            new Thread(() -> {
+                try {
+                    while (true)
+                    {
+                        Socket socket = serverSocket.accept();
+                        BufferedReader entrada = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                        new Thread(() -> escucharMensajes(entrada)).start();
+                    }
+                } catch (IOException e) {
+                    System.err.println("Error al escuchar conexiones: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }).start();
+
+            Scanner scanner = new Scanner(System.in);
+            while (true) {
+                System.out.print("Ingrese destinatario: ");
+                String destinatario = scanner.nextLine();
+
+                if (clientes.containsKey(destinatario) &&  !(destinatario.equals(this.getNombre()))) {
+                    System.out.print("Ingrese mensaje: ");
+                    String mensaje = scanner.nextLine();
+                    organizadorDeEnvioDeMensaje(clientes.get(this.getNombre()),null,destinatario, mensaje,false);
+                } else {
+                    System.out.println("Destinatario invalido.");
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Error al escuchar conexiones: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public void organizadorDeEnvioDeMensaje(Cliente emisorORIGINAL, Cliente nuevoEmisor,String destinatario, String mensaje,boolean comprobarDirecto) throws IOException {
+
+        Cliente clienteDestino = clientes.get(destinatario);
+
+        if (clienteDestino != null) {
+
+            if ( comprobarDirecto == true ) {
+
+                if ( clienteDestino.equals(nuevoEmisor.getClienteSiguiente()) || clienteDestino.equals(nuevoEmisor.getClienteAnterior())) { // comprobar que el intermediario tenga una conexion directa con el destinatario.
+                    enviarMensajeDirecto(emisorORIGINAL,nuevoEmisor,clienteDestino, mensaje);
+                }
+                else {
+                    reenviarMensaje(emisorORIGINAL,nuevoEmisor,clienteDestino,mensaje); // reenviar el mensaje para la derecha o izquierda, hasta que el intermediario sea el anterior o siguiente del destinatario.
+                }
+            }
+
+            else {
+                if (clienteDestino.equals(emisorORIGINAL.getClienteSiguiente()) || clienteDestino.equals(emisorORIGINAL.getClienteAnterior())) { // comprobar que este cliente se quiere comunicar con alguien a su costado.
+                    nuevoEmisor = null;
+                    enviarMensajeDirecto(emisorORIGINAL,nuevoEmisor,clienteDestino, mensaje);
+                }
+                else {
+                    reenviarMensaje(emisorORIGINAL,nuevoEmisor,clienteDestino,mensaje); // verifica si es derecha o izquierda.
+                }
+            }
+        } else {
+            System.out.println("No se encontro al destinatario: " + destinatario);
+        }
+    }
+    private void reenviarMensaje(Cliente emisorORIGINAL,Cliente clienteNuevoEmisor, Cliente clienteDestino, String mensaje) throws IOException {
+        boolean primVuelta = false;
+        if ( primVuelta == false ) {
+            clienteNuevoEmisor = emisorORIGINAL; // asignamos a nuevoEmisor el valor de este cliente, para después asignarle el intermediario de izquierda o derecha.
+            primVuelta = true;
+        }
+
+        List<Cliente> listaClientes = new ArrayList<>(clientes.values());
+        // funcion ordena index del arreglo.
+        listaClientes.sort(Comparator.comparingInt(c -> indexOfClient("C:\\Users\\WALTER\\IdeaProjects\\TPREDESEBERLE\\src\\Conexion", c.getNombre())));
+
+        int indiceOrigen = listaClientes.indexOf(clienteNuevoEmisor); // emisorOriginal
+        int indiceDestino = listaClientes.indexOf(clienteDestino); // emisor destino
+
+        if (indiceDestino > indiceOrigen) { // izq a derecha
+            clienteNuevoEmisor = emisorORIGINAL.getClienteSiguiente();
+            comunicacionSiguiente(emisorORIGINAL,clienteNuevoEmisor, clienteDestino, mensaje);
+        }
+        else if (indiceDestino < indiceOrigen) { // derecha a izq
+            clienteNuevoEmisor = emisorORIGINAL.getClienteAnterior();
+            comunicacionAtras(emisorORIGINAL,clienteNuevoEmisor, clienteDestino, mensaje);
+        } else {
+            System.out.println(" Error: Son iguales los indices. ");
+        }
+    }
+    private int indexOfClient(String connectionFile, String clienteNombre) {
+        try (BufferedReader br = new BufferedReader(new FileReader(connectionFile))) {
+            String linea;
+            int index = 0;
+            while ((linea = br.readLine()) != null) {
+                String[] nombresClientes = linea.split("<->");
+                for (String nombre : nombresClientes) {
+                    if (nombre.equalsIgnoreCase(clienteNombre)) {
+                        return index;
+                    }
+                    index++;
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return -1;
+    }
+
+    private void enviarMensajeDirecto(Cliente emisorReal, Cliente intermediario, Cliente clienteDestino, String mensaje) {
+
+        if (intermediario == null) {
+            try (Socket socketDestino = new Socket(clienteDestino.getIp(), clienteDestino.getPuerto());
+                 PrintWriter salidaDestino = new PrintWriter(socketDestino.getOutputStream(), true)) {
+                salidaDestino.println(emisorReal.getNombre() + " : " + mensaje);
+                System.out.println("Mensaje enviado directamente a: " + clienteDestino.getNombre());
+            } catch (UnknownHostException e) {
+                throw new RuntimeException(e);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
+        }
+        else {
+            try (Socket socketDestino = new Socket(clienteDestino.getIp(), clienteDestino.getPuerto());
+                 PrintWriter salidaDestino = new PrintWriter(socketDestino.getOutputStream(), true)) {
+                salidaDestino.println("\nMensaje recibido de parte de : " + emisorReal.getNombre() + " a través de  " + this.getNombre() +  ": " +mensaje);
+                System.out.println("El mensaje llego correctamente a: " + clienteDestino.getNombre());
+            } catch (UnknownHostException e) {
+                throw new RuntimeException(e);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    private void comunicacionAtras(Cliente emisorORIGINAL, Cliente clienteNuevoEmisor, Cliente clienteDestino, String mensaje) throws IOException {
+        Cliente intermediario = clienteNuevoEmisor;
+        while (intermediario != null && !intermediario.equals(clienteDestino)) {
+            try (Socket socketIntermediario = new Socket(intermediario.getIp(), intermediario.getPuerto()))
+            {
+                Cliente.setSalidaInter( new PrintWriter(socketIntermediario.getOutputStream(), true));
+                Cliente.salidaInter.println("\n Mensaje recibido de parte de: " + intermediario.getClienteSiguiente().getNombre() + ": " + mensaje + " Reenviando a: " + intermediario.getClienteAnterior().getNombre() + "...");
+            }
+            intermediario = intermediario.getClienteAnterior();
+        }
+        if (intermediario != null && intermediario.equals(clienteDestino)) {
+            intermediario.getClienteSiguiente().enviarMensajeDirecto(emisorORIGINAL, intermediario.getClienteSiguiente(), intermediario, mensaje);
+        }
+    }
+
+    private void comunicacionSiguiente(Cliente emisorORIGINAL, Cliente clienteNuevoEmisor, Cliente clienteDestino, String mensaje) throws IOException {
+        Cliente intermediario = clienteNuevoEmisor;
+        while (intermediario != null && !intermediario.equals(clienteDestino)) {
+            try (Socket socketIntermediario = new Socket(intermediario.getIp(), intermediario.getPuerto()))
+            {
+                Cliente.setSalidaInter( new PrintWriter(socketIntermediario.getOutputStream(), true));
+                Cliente.salidaInter.println("\nMensaje recibido de parte de: " + intermediario.getClienteAnterior().getNombre() + ": " + mensaje + " Reenviando a: " + intermediario.getClienteSiguiente().getNombre() + "...");
+            }
+            intermediario = intermediario.getClienteSiguiente();
+        }
+        if (intermediario != null && intermediario.equals(clienteDestino)) {
+            intermediario.getClienteAnterior().enviarMensajeDirecto(emisorORIGINAL, intermediario.getClienteAnterior(), intermediario, mensaje);
+        }
+    }
+
+    private void escucharMensajes(BufferedReader entrada) {
+        try {
+            while (true) {
+                String mensajeRecibido = entrada.readLine();
+                if (mensajeRecibido != null) {
+                    System.out.println(mensajeRecibido);
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String getNombre() {
+        return nombre;
+    }
+
+    public void setNombre(String nombre) {
+        this.nombre = nombre;
+    }
+
+    public String getIp() {
+        return ip;
+    }
+
+    public void setIp(String ip) {
+        this.ip = ip;
+    }
+
+    public int getPuerto() {
+        return puerto;
+    }
+
+    public void setPuerto(int puerto) {
+        this.puerto = puerto;
+    }
+
+    public Cliente getClienteAnterior() {
+        return clienteAnterior;
+    }
+
+    public void setClienteAnterior(Cliente clienteAnterior) {
+        this.clienteAnterior = clienteAnterior;
+    }
+
+    public Cliente getClienteSiguiente() {
+        return clienteSiguiente;
+    }
+
+    public void setClienteSiguiente(Cliente clienteSiguiente) {
+        this.clienteSiguiente = clienteSiguiente;
+    }
+
+    public static Map<String, Cliente> getClientes() {
+        return clientes;
+    }
+
+    public static void setClientes(Map<String, Cliente> clientes) {
+        Cliente.clientes = clientes;
+    }
+
+    public static PrintWriter getSalidaInter() {
+        return salidaInter;
+    }
+
+    public static void setSalidaInter(PrintWriter salidaInter) {
+        Cliente.salidaInter = salidaInter;
+    }
+}
